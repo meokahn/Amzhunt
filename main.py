@@ -5,7 +5,7 @@ import re
 import time
 from datetime import datetime
 from telegram import Bot, InputMediaPhoto
-from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+from telegram.ext import Updater, MessageHandler, filters, CallbackContext
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
