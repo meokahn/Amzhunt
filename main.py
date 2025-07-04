@@ -1,64 +1,97 @@
-import logging
-from telegram import Bot, InputMediaPhoto
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from datetime import datetime
-import asyncio
-import re
-import os
 
-# Config
-SOURCE_CHANNEL = "-1001822360895"  # @scontierrati
-TARGET_CHANNEL = "@amazonhunterITA"
-AMAZON_TAG = "amazonhunter0a-21"
-ACTIVE_HOURS = range(8, 24)
+import os
+import logging
+import asyncio
+from datetime import datetime
+from telegram import Bot
+from telegram.constants import ParseMode
+from telethon import TelegramClient
+from telethon.tl.types import MessageMediaPhoto
+import re
 
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Estrai link Amazon e aggiorna il tag affiliato
-def extract_amazon_links(text):
-    links = re.findall(r"(https://(?:www\.)?amzn\.to/\S+|https://www\.amazon\.it/\S+)", text)
-    updated = []
-    for link in links:
-        if "tag=" in link:
-            link = re.sub(r"tag=[^&\s]+", f"tag={AMAZON_TAG}", link)
+# Variabili ambiente
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # Es: @amazonhunterITA
+TG_API_ID = int(os.getenv("TG_API_ID"))
+TG_API_HASH = os.getenv("TG_API_HASH")
+TG_SESSION = os.getenv("TG_SESSION")
+SOURCE_CHANNEL = "scontierrati"
+
+# Variabili di stato
+MESSAGGI_GIA_INVIATI = set()
+CONTEGGIO_GIORNALIERO = 0
+
+# Estrai link affiliato e immagine
+async def estrai_info(msg):
+    links = re.findall(r'(https?://[^\s]+)', msg.message)
+    amazon_links = [l for l in links if re.search(r'amzn\.(to|com|eu)|amazon\.', l)]
+    if not amazon_links:
+        return None, None
+
+    link = amazon_links[0]
+    if "?tag=" not in link:
+        if "?" in link:
+            link_aff = link + "&tag=amazonhunter0a-21"
         else:
-            sep = "&" if "?" in link else "?"
-            link = f"{link}{sep}tag={AMAZON_TAG}"
-        updated.append(link)
-    return updated
-
-# Funzione di inoltro
-async def forward_message(update, context):
-    now = datetime.now().hour
-    if now not in ACTIVE_HOURS:
-        return
-
-    message = update.channel_post
-    if not message or not message.text:
-        return
-
-    links = extract_amazon_links(message.text)
-    if not links:
-        return
-
-    new_text = re.sub(r"https://\S+", "", message.text)
-    new_text = new_text.strip() + f"\n\n{links[0]}\n#hunterITA"
-
-    # Invia con immagine se disponibile
-    if message.photo:
-        photo_file_id = message.photo[-1].file_id
-        await context.bot.send_photo(chat_id=TARGET_CHANNEL, photo=photo_file_id, caption=new_text[:1024])
+            link_aff = link + "?tag=amazonhunter0a-21"
     else:
-        await context.bot.send_message(chat_id=TARGET_CHANNEL, text=new_text[:4096])
+        link_aff = link
 
-async def main():
-    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
-    app.add_handler(MessageHandler(filters.ALL, forward_message))
-    await app.start()
-    await app.updater.start_polling()
-    await app.idle()
+    testo = msg.message.replace(link, link_aff) + "\n\n#hunterITA"
+    immagine = None
+    if isinstance(msg.media, MessageMediaPhoto):
+        immagine = await msg.download_media()
+    return testo, immagine
+
+# Invia messaggio
+async def invia_messaggio(bot, testo, immagine):
+    global CONTEGGIO_GIORNALIERO
+    try:
+        if immagine:
+            await bot.send_photo(chat_id=CHANNEL_ID, photo=immagine, caption=testo, parse_mode=ParseMode.HTML)
+        else:
+            await bot.send_message(chat_id=CHANNEL_ID, text=testo, parse_mode=ParseMode.HTML)
+        logger.info("✅ Inviato: " + testo[:40])
+        CONTEGGIO_GIORNALIERO += 1
+    except Exception as e:
+        logger.error(f"❌ Errore invio: {e}")
+
+# Controllo e invio offerte
+async def controlla_offerte():
+    bot = Bot(token=BOT_TOKEN)
+    client = TelegramClient(TG_SESSION, TG_API_ID, TG_API_HASH)
+    await client.start()
+    async for msg in client.iter_messages(SOURCE_CHANNEL, limit=10):
+        if msg.message and "amazon" in msg.message.lower() and msg.id not in MESSAGGI_GIA_INVIATI:
+            testo, immagine = await estrai_info(msg)
+            if testo:
+                await invia_messaggio(bot, testo, immagine)
+                MESSAGGI_GIA_INVIATI.add(msg.id)
+    await client.disconnect()
+
+# Invia report giornaliero
+async def invia_report():
+    bot = Bot(token=BOT_TOKEN)
+    report = f"📊 Report giornaliero Amazon Hunter\nOfferte pubblicate: {CONTEGGIO_GIORNALIERO}\n#hunterITA"
+    try:
+        await bot.send_message(chat_id=CHANNEL_ID, text=report, parse_mode=ParseMode.HTML)
+        logger.info("✅ Report inviato")
+    except Exception as e:
+        logger.error(f"❌ Errore report: {e}")
+
+# Esecuzione schedulata
+async def scheduler():
+    while True:
+        ora = datetime.now()
+        if 8 <= ora.hour <= 23 and ora.minute in [0, 30]:
+            await controlla_offerte()
+        if ora.hour == 23 and ora.minute == 30:
+            await invia_report()
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(scheduler())
