@@ -3,3 +3,4 @@ telethon
 APScheduler
 python-dotenv
 asyncio
+pytz
