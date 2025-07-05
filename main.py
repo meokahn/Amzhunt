@@ -42,71 +42,57 @@ async def check_and_post_deals():
         logger.info(f"Fuori orario in Italia ({now.strftime('%H:%M')}). Salto il controllo.")
         return
 
-    logger.info(f"Avvio controllo su {CHANNEL_SOURCE} (Ora italiana: {now.strftime('%H:%M')})...")
+    logger.info(f"Avvio controllo su {CHANNEL_SOURCE}...")
     bot = Bot(token=BOT_TOKEN)
 
-    # --- NUOVO BLOCCO DI CONNESSIONE MANUALE ---
-    # 1. Inizializza il client SENZA sessione
-    client = TelegramClient(None, API_ID, API_HASH)
-    # 2. Assegna la sessione manualmente dalla stringa
-    client.session = StringSession(SESSION_STRING)
-    
+    client = None # Inizializziamo a None
     try:
-        logger.info("Connessione manuale del client Telethon...")
-        await client.connect()
-        if not await client.is_user_authorized():
-            logger.error("ERRORE: La SESSION_STRING non è valida o è scaduta. Rigenerala.")
-            await client.disconnect()
-            return
+        # --- BLOCCO DI DEBUG ---
+        logger.info("--- INIZIO BLOCCO DEBUG ---")
+        logger.info(f"Tipo della variabile SESSION_STRING: {type(SESSION_STRING)}")
+        logger.info(f"Primi 15 caratteri di SESSION_STRING: {str(SESSION_STRING)[:15] if SESSION_STRING else 'None'}")
         
-        logger.info("Client connesso con successo. Recupero messaggi...")
-        messages = await client.get_messages(CHANNEL_SOURCE, limit=20)
+        session_object = StringSession(SESSION_STRING)
+        logger.info(f"Tipo dell'oggetto session_object creato: {type(session_object)}")
+        logger.info("--- FINE BLOCCO DEBUG ---")
 
-        for message in reversed(messages):
-            if not message or not message.text or message.id in posted_message_ids:
-                continue
+        async with TelegramClient(session_object, API_ID, API_HASH) as client:
+            logger.info("Client Telethon connesso con successo. Recupero messaggi...")
+            messages = await client.get_messages(CHANNEL_SOURCE, limit=20)
 
-            amazon_link_match = re.search(r"(https?://(?:www\.)?(?:amzn\.to|amazon\.[a-z\.]+)[^\s]+)", message.text)
+            for message in reversed(messages):
+                if not message or not message.text or message.id in posted_message_ids:
+                    continue
 
-            if amazon_link_match:
-                original_link = amazon_link_match.group(0)
-                cleaned_link = original_link.split('?')[0]
-                affiliate_link = f"{cleaned_link}?tag={AMAZON_TAG}"
-                new_text = message.text.replace(original_link, affiliate_link)
-                final_text = f"{new_text}\n\n#hunterITA"
-                
-                logger.info(f"Trovata offerta con link: {affiliate_link}")
+                amazon_link_match = re.search(r"(https?://(?:www\.)?(?:amzn\.to|amazon\.[a-z\.]+)[^\s]+)", message.text)
 
-                try:
-                    if message.photo:
-                        await bot.send_photo(
-                            chat_id=CHANNEL_TARGET, photo=message.photo.file_id,
-                            caption=final_text, parse_mode=ParseMode.HTML
-                        )
-                    else:
-                        await bot.send_message(
-                            chat_id=CHANNEL_TARGET, text=final_text,
-                            parse_mode=ParseMode.HTML, disable_web_page_preview=False
-                        )
+                if amazon_link_match:
+                    original_link = amazon_link_match.group(0)
+                    cleaned_link = original_link.split('?')[0]
+                    affiliate_link = f"{cleaned_link}?tag={AMAZON_TAG}"
+                    new_text = message.text.replace(original_link, affiliate_link)
+                    final_text = f"{new_text}\n\n#hunterITA"
                     
-                    logger.info(f"Offerta {message.id} pubblicata su {CHANNEL_TARGET}.")
-                    posted_message_ids.add(message.id)
-                    daily_posts_counter += 1
-                    await asyncio.sleep(3)
+                    logger.info(f"Trovata offerta con link: {affiliate_link}")
 
-                except Exception as e:
-                    logger.error(f"Errore invio messaggio {message.id}: {e}")
+                    # ... (il resto del codice di invio rimane uguale)
+                    try:
+                        if message.photo:
+                            await bot.send_photo(chat_id=CHANNEL_TARGET, photo=message.photo.file_id, caption=final_text, parse_mode=ParseMode.HTML)
+                        else:
+                            await bot.send_message(chat_id=CHANNEL_TARGET, text=final_text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+                        
+                        logger.info(f"Offerta {message.id} pubblicata su {CHANNEL_TARGET}.")
+                        posted_message_ids.add(message.id)
+                        daily_posts_counter += 1
+                        await asyncio.sleep(3)
+                    except Exception as e:
+                        logger.error(f"Errore invio messaggio {message.id}: {e}")
 
     except Exception as e:
-        logger.error(f"Errore generale nel blocco Telethon: {e}", exc_info=True)
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-        logger.info("Client disconnesso.")
-    # --- FINE BLOCCO MANUALE ---
+        logger.error("ERRORE CRITICO nel blocco Telethon:", exc_info=True)
 
 async def send_daily_report():
-    # ... il resto della funzione non cambia ...
     global daily_posts_counter
     bot = Bot(token=BOT_TOKEN)
     report_message = f"📊 **Report Giornaliero** 📊\n\nOfferte pubblicate oggi: **{daily_posts_counter}**"
