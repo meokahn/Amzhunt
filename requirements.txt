@@ -1,7 +1,5 @@
+python-telegram-bot
 telethon
-apscheduler
-python-telegram-bot==20.7
+APScheduler
 python-dotenv
-requests
-beautifulsoup4
-lxml
+asyncio
