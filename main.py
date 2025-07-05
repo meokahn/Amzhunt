@@ -2,76 +2,113 @@ import os
 import re
 import asyncio
 from datetime import datetime
-from telethon import TelegramClient, events
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from dotenv import load_dotenv
-from telethon.tl.types import MessageMediaPhoto
-from telethon.tl.functions.messages import GetMessagesRequest
+import logging
 
+from dotenv import load_dotenv
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
+from telegram import Bot
+from telegram.constants import ParseMode
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# --- Configurazione del logging ---
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Caricamento variabili d'ambiente ---
+# Su Railway le variabili vengono caricate automaticamente, load_dotenv() è utile per test locali
 load_dotenv()
 
-# Variabili di ambiente
-api_id = int(os.getenv("TG_API_ID"))
-api_hash = os.getenv("TG_API_HASH")
-session = os.getenv("TG_SESSION_NAME")
-channel_source = os.getenv("TG_CHANNEL_SOURCE")
-channel_target = os.getenv("TG_CHANNEL_TARGET")
-affiliate_tag = os.getenv("AMAZON_TAG")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_SOURCE = os.getenv("CHANNEL_SOURCE")
+CHANNEL_TARGET = os.getenv("CHANNEL_TARGET")
+AMAZON_TAG = os.getenv("AMAZON_TAG")
 
-client = TelegramClient(session, api_id, api_hash)
-scheduler = AsyncIOScheduler()
+# --- Variabili globali per il tracking ---
+posted_message_ids = set()
+daily_posts_counter = 0
 
-posted_today = []  # Tracciamento offerte per report 23:30
+async def check_and_post_deals():
+    """Controlla i nuovi messaggi, li modifica e li pubblica."""
+    global daily_posts_counter
 
-# Funzione per modificare link con tag affiliato
-def convert_link(original_url):
-    return re.sub(r"(amazon\.[a-z.]+/[\w\-%]+/[\w\d]+)(\?.*?)?(?=\s|$)", 
-                  rf"\1?tag={affiliate_tag}", original_url)
+    now = datetime.now()
+    if not 8 <= now.hour < 23:
+        logger.info("Fuori orario. Salto il controllo.")
+        return
 
-# Estrai immagine dal messaggio
-async def get_image(message):
-    if message.media and isinstance(message.media, MessageMediaPhoto):
-        msg = await client(GetMessagesRequest(id=[message.id], peer=channel_source))
-        media_msg = msg.messages[0]
-        return await client.download_media(media_msg.media)
-    return None
+    logger.info(f"Avvio controllo su {CHANNEL_SOURCE}...")
+    bot = Bot(token=BOT_TOKEN)
 
-# Estrai e pubblica offerte valide
-async def check_new_deals():
-    async for message in client.iter_messages(channel_source, limit=10):
-        if not message.text:
-            continue
+    async with TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH) as client:
+        try:
+            messages = await client.get_messages(CHANNEL_SOURCE, limit=20)
+        except Exception as e:
+            logger.error(f"Errore recupero messaggi da {CHANNEL_SOURCE}: {e}")
+            return
 
-        # Cerca link Amazon (anche abbreviati tipo amzn.to)
-        if re.search(r"(amazon\.[a-z.]+|amzn\.to)/", message.text):
-            image_path = await get_image(message)
-            modified_text = convert_link(message.text)
+        for message in reversed(messages):
+            if not message or not message.text or message.id in posted_message_ids:
+                continue
 
-            await client.send_file(
-                entity=channel_target,
-                file=image_path if image_path else None,
-                caption=f"{modified_text}\n\n#hunterITA"
-            )
-            posted_today.append(datetime.now().strftime("%H:%M"))
+            amazon_link_match = re.search(r"(https?://(?:www\.)?(?:amzn\.to|amazon\.[a-z\.]+)[^\s]+)", message.text)
 
-# Report giornaliero alle 23:30
+            if amazon_link_match:
+                original_link = amazon_link_match.group(0)
+                cleaned_link = original_link.split('?')[0]
+                affiliate_link = f"{cleaned_link}?tag={AMAZON_TAG}"
+
+                new_text = message.text.replace(original_link, affiliate_link)
+                final_text = f"{new_text}\n\n#hunterITA"
+                
+                logger.info(f"Trovata offerta con link: {affiliate_link}")
+
+                try:
+                    if message.photo:
+                        await bot.send_photo(
+                            chat_id=CHANNEL_TARGET, photo=message.photo.file_id,
+                            caption=final_text, parse_mode=ParseMode.HTML
+                        )
+                    else:
+                        await bot.send_message(
+                            chat_id=CHANNEL_TARGET, text=final_text,
+                            parse_mode=ParseMode.HTML, disable_web_page_preview=False
+                        )
+                    
+                    logger.info(f"Offerta {message.id} pubblicata su {CHANNEL_TARGET}.")
+                    posted_message_ids.add(message.id)
+                    daily_posts_counter += 1
+                    await asyncio.sleep(3)
+
+                except Exception as e:
+                    logger.error(f"Errore invio messaggio {message.id}: {e}")
+
 async def send_daily_report():
-    count = len(posted_today)
-    await client.send_message(
-        entity=channel_target,
-        message=f"📊 Report Amazon Hunter ITA – Oggi pubblicate {count} offerte.\n#hunterITA"
-    )
-    posted_today.clear()
-
-# Avvio scheduler
-async def start_bot():
-    scheduler.add_job(check_new_deals, "cron", minute="0,30", hour="8-23")
-    scheduler.add_job(send_daily_report, "cron", hour=23, minute=30)
-    scheduler.start()
-    await client.run_until_disconnected()
+    """Invia il report giornaliero."""
+    global daily_posts_counter
+    report_message = f"📊 **Report Giornaliero** 📊\n\nOfferte pubblicate oggi: **{daily_posts_counter}**"
+    bot = Bot(token=BOT_TOKEN)
+    await bot.send_message(chat_id=CHANNEL_TARGET, text=report_message, parse_mode=ParseMode.MARKDOWN)
+    logger.info("Report giornaliero inviato.")
+    daily_posts_counter = 0
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(client.start())
-    loop.create_task(start_bot())
-    loop.run_forever()
+    if not all([API_ID, API_HASH, SESSION_STRING, BOT_TOKEN, CHANNEL_SOURCE, CHANNEL_TARGET, AMAZON_TAG]):
+        logger.critical("Una o più variabili d'ambiente non sono impostate. Uscita.")
+        exit()
+
+    scheduler = AsyncIOScheduler(timezone="Europe/Rome")
+    scheduler.add_job(check_and_post_deals, 'interval', minutes=30)
+    scheduler.add_job(send_daily_report, 'cron', hour=23, minute=30)
+
+    logger.info("Scheduler avviato. Il bot è operativo.")
+    scheduler.start()
+
+    try:
+        asyncio.get_event_loop().run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot fermato.")
+        
