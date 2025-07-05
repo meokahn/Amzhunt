@@ -6,7 +6,7 @@ import logging
 import pytz  # <-- AGGIUNTO
 
 from dotenv import load_dotenv
-from telethon.sync import TelegramClient
+from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telegram import Bot
 from telegram.constants import ParseMode
