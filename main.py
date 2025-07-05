@@ -3,6 +3,7 @@ import re
 import asyncio
 from datetime import datetime
 import logging
+import pytz  # <-- AGGIUNTO
 
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
@@ -16,7 +17,6 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- Caricamento variabili d'ambiente ---
-# Su Railway le variabili vengono caricate automaticamente, load_dotenv() è utile per test locali
 load_dotenv()
 
 API_ID = os.getenv("API_ID")
@@ -35,12 +35,18 @@ async def check_and_post_deals():
     """Controlla i nuovi messaggi, li modifica e li pubblica."""
     global daily_posts_counter
 
-    now = datetime.now()
+    # --- BLOCCO ORARIO CORRETTO ---
+    # Specifichiamo il fuso orario di Roma
+    rome_tz = pytz.timezone("Europe/Rome")
+    # Prendiamo l'ora attuale in quel fuso orario
+    now = datetime.now(rome_tz)
+    
     if not 8 <= now.hour < 23:
-        logger.info("Fuori orario. Salto il controllo.")
+        logger.info(f"Fuori orario in Italia ({now.strftime('%H:%M')}). Salto il controllo.")
         return
+    # --- FINE BLOCCO CORRETTO ---
 
-    logger.info(f"Avvio controllo su {CHANNEL_SOURCE}...")
+    logger.info(f"Avvio controllo su {CHANNEL_SOURCE} (Ora italiana: {now.strftime('%H:%M')})...")
     bot = Bot(token=BOT_TOKEN)
 
     async with TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH) as client:
@@ -89,15 +95,15 @@ async def check_and_post_deals():
 async def send_daily_report():
     """Invia il report giornaliero."""
     global daily_posts_counter
-    report_message = f"📊 **Report Giornaliero** 📊\n\nOfferte pubblicate oggi: **{daily_posts_counter}**"
     bot = Bot(token=BOT_TOKEN)
+    report_message = f"📊 **Report Giornaliero** 📊\n\nOfferte pubblicate oggi: **{daily_posts_counter}**"
     await bot.send_message(chat_id=CHANNEL_TARGET, text=report_message, parse_mode=ParseMode.MARKDOWN)
     logger.info("Report giornaliero inviato.")
     daily_posts_counter = 0
 
 if __name__ == "__main__":
     if not all([API_ID, API_HASH, SESSION_STRING, BOT_TOKEN, CHANNEL_SOURCE, CHANNEL_TARGET, AMAZON_TAG]):
-        logger.critical("Una o più variabili d'ambiente non sono impostate. Uscita.")
+        logger.critical("Una o più variabili d'ambiente non sono state impostate. Uscita.")
         exit()
 
     scheduler = AsyncIOScheduler(timezone="Europe/Rome")
@@ -111,4 +117,4 @@ if __name__ == "__main__":
         asyncio.get_event_loop().run_forever()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot fermato.")
-        
+
