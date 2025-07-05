@@ -1,93 +1,84 @@
-
-import os
 import asyncio
-import logging
-import requests
+import os
 import re
-from bs4 import BeautifulSoup
 from datetime import datetime
-from telegram import Bot
-from telegram.error import TelegramError
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telethon import TelegramClient
+from telethon.tl.types import MessageMediaPhoto
+from telethon.tl.functions.messages import GetHistoryRequest
+from dotenv import load_dotenv
 
-# Configurazioni
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-SOURCE_URL = "https://t.me/scontierrati"
+load_dotenv()
 
-# Configura logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+API_ID = int(os.getenv("TG_API_ID"))
+API_HASH = os.getenv("TG_API_HASH")
+SESSION_NAME = os.getenv("TG_SESSION", "anon")
+SOURCE_CHANNEL = os.getenv("TG_SOURCE_CHANNEL")
+DEST_CHANNEL = os.getenv("TG_DEST_CHANNEL")
+AFFILIATE_TAG = os.getenv("AMAZON_TAG", "amazonhunter0a-21")
 
-# Funzione per ottenere messaggi da @scontierrati
-def fetch_amazon_deals():
-    try:
-        response = requests.get(SOURCE_URL, timeout=10)
-        if response.status_code != 200:
-            logger.error("Errore nel recupero della pagina: %s", response.status_code)
-            return None
+client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        messages = soup.select("div.tgme_widget_message_text")
-        photos = soup.select("a.tgme_widget_message_photo_wrap")
-        
-        for msg, photo_tag in zip(messages[::-1], photos[::-1]):  # Ultimo messaggio in cima
-            text = msg.get_text()
-            match = re.search(r"(https://(?:www\.)?amzn\.[a-z]{2,3}(?:\.[a-z]{2})?/[a-zA-Z0-9\-_/%?=]+)", text)
-            if match:
-                url = match.group(1)
-                if "amazon" in url:
-                    img_url = photo_tag["style"].split("url('")[1].split("')")[0]
-                    return {
-                        "text": text,
-                        "image": img_url.replace("https://telegram", "https://tlgrm") if "telegram" in img_url else img_url,
-                        "url": url
-                    }
-        return None
+def extract_amazon_link(text):
+    match = re.search(r"(https?://[^\s]*amazon[^\s]*)", text)
+    if match:
+        url = match.group(1)
+        if "tag=" not in url:
+            if "?" in url:
+                url += f"&tag={AFFILIATE_TAG}"
+            else:
+                url += f"?tag={AFFILIATE_TAG}"
+        return url
+    return None
 
-    except Exception as e:
-        logger.exception("Errore durante lo scraping")
-        return None
+async def fetch_last_valid_post():
+    async with client:
+        history = await client(GetHistoryRequest(
+            peer=SOURCE_CHANNEL,
+            limit=10,
+            offset_date=None,
+            offset_id=0,
+            max_id=0,
+            min_id=0,
+            add_offset=0,
+            hash=0
+        ))
 
-# Funzione per inviare l'offerta su Telegram
+        for message in history.messages:
+            if message.message:
+                link = extract_amazon_link(message.message)
+                if link:
+                    return message, link
+    return None, None
+
 async def post_deal():
-    bot = Bot(token=BOT_TOKEN)
-    deal = fetch_amazon_deals()
-    if deal:
-        try:
-            await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=deal["image"],
-                caption=f"{deal['text']}
+    await client.start()
+    message, link = await fetch_last_valid_post()
+    if not message:
+        return
 
-#hunterITA
-{deal['url'].split('?')[0]}?tag=amazonhunter0a-21"
-            )
-            logger.info("Offerta pubblicata")
-        except TelegramError as e:
-            logger.error("Errore Telegram: %s", e)
-    else:
-        logger.info("Nessuna nuova offerta trovata.")
+    caption = f"{message.message}\n\n🔗 {link} #hunterITA"
+    file = None
 
-# Scheduler
-async def scheduler():
-    sched = AsyncIOScheduler(timezone="Europe/Rome")
-    sched.add_job(post_deal, "cron", hour="8-23", minute="0,30")
-    sched.add_job(send_report, "cron", hour=23, minute=30)
-    sched.start()
-    logger.info("Scheduler avviato")
-    while True:
-        await asyncio.sleep(3600)
+    if isinstance(message.media, MessageMediaPhoto):
+        file = await client.download_media(message.media)
 
-# Report giornaliero
+    await client.send_file(DEST_CHANNEL, file if file else None, caption=caption)
+    await client.disconnect()
+
 async def send_report():
-    bot = Bot(token=BOT_TOKEN)
-    try:
-        await bot.send_message(chat_id=CHANNEL_ID, text="✅ Report 23:30: offerte pubblicate con successo. #hunterITA")
-        logger.info("Report inviato")
-    except TelegramError as e:
-        logger.error("Errore Telegram nel report: %s", e)
+    now = datetime.now()
+    if now.hour == 23 and now.minute >= 30:
+        await client.start()
+        await client.send_message(DEST_CHANNEL, f"📊 Report: offerte pubblicate oggi #hunterITA")
+        await client.disconnect()
 
-# Avvio
+async def scheduler():
+    while True:
+        now = datetime.now()
+        if 8 <= now.hour <= 23 and now.minute % 30 == 0:
+            await post_deal()
+            await send_report()
+        await asyncio.sleep(60)
+
 if __name__ == "__main__":
     asyncio.run(scheduler())
