@@ -3,7 +3,7 @@ import re
 import asyncio
 from datetime import datetime
 import logging
-import pytz  # <-- AGGIUNTO
+import pytz
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
@@ -35,26 +35,32 @@ async def check_and_post_deals():
     """Controlla i nuovi messaggi, li modifica e li pubblica."""
     global daily_posts_counter
 
-    # --- BLOCCO ORARIO CORRETTO ---
-    # Specifichiamo il fuso orario di Roma
     rome_tz = pytz.timezone("Europe/Rome")
-    # Prendiamo l'ora attuale in quel fuso orario
     now = datetime.now(rome_tz)
     
     if not 8 <= now.hour < 23:
         logger.info(f"Fuori orario in Italia ({now.strftime('%H:%M')}). Salto il controllo.")
         return
-    # --- FINE BLOCCO CORRETTO ---
 
     logger.info(f"Avvio controllo su {CHANNEL_SOURCE} (Ora italiana: {now.strftime('%H:%M')})...")
     bot = Bot(token=BOT_TOKEN)
 
-    async with TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH) as client:
-        try:
-            messages = await client.get_messages(CHANNEL_SOURCE, limit=20)
-        except Exception as e:
-            logger.error(f"Errore recupero messaggi da {CHANNEL_SOURCE}: {e}")
+    # --- NUOVO BLOCCO DI CONNESSIONE MANUALE ---
+    # 1. Inizializza il client SENZA sessione
+    client = TelegramClient(None, API_ID, API_HASH)
+    # 2. Assegna la sessione manualmente dalla stringa
+    client.session = StringSession(SESSION_STRING)
+    
+    try:
+        logger.info("Connessione manuale del client Telethon...")
+        await client.connect()
+        if not await client.is_user_authorized():
+            logger.error("ERRORE: La SESSION_STRING non è valida o è scaduta. Rigenerala.")
+            await client.disconnect()
             return
+        
+        logger.info("Client connesso con successo. Recupero messaggi...")
+        messages = await client.get_messages(CHANNEL_SOURCE, limit=20)
 
         for message in reversed(messages):
             if not message or not message.text or message.id in posted_message_ids:
@@ -66,7 +72,6 @@ async def check_and_post_deals():
                 original_link = amazon_link_match.group(0)
                 cleaned_link = original_link.split('?')[0]
                 affiliate_link = f"{cleaned_link}?tag={AMAZON_TAG}"
-
                 new_text = message.text.replace(original_link, affiliate_link)
                 final_text = f"{new_text}\n\n#hunterITA"
                 
@@ -92,8 +97,16 @@ async def check_and_post_deals():
                 except Exception as e:
                     logger.error(f"Errore invio messaggio {message.id}: {e}")
 
+    except Exception as e:
+        logger.error(f"Errore generale nel blocco Telethon: {e}", exc_info=True)
+    finally:
+        if client.is_connected():
+            await client.disconnect()
+        logger.info("Client disconnesso.")
+    # --- FINE BLOCCO MANUALE ---
+
 async def send_daily_report():
-    """Invia il report giornaliero."""
+    # ... il resto della funzione non cambia ...
     global daily_posts_counter
     bot = Bot(token=BOT_TOKEN)
     report_message = f"📊 **Report Giornaliero** 📊\n\nOfferte pubblicate oggi: **{daily_posts_counter}**"
